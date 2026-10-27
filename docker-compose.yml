@@ -1,0 +1,34 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      RAG_ENVIRONMENT: production
+      RAG_LOG_LEVEL: INFO
+      RAG_CHAT_PROVIDER: ${RAG_CHAT_PROVIDER:-extractive}
+      RAG_EMBEDDING_PROVIDER: ${RAG_EMBEDDING_PROVIDER:-hash}
+      RAG_VECTOR_BACKEND: ${RAG_VECTOR_BACKEND:-chroma}
+      RAG_VECTOR_PERSIST: "true"
+      RAG_DATA_DIR: /app/data
+      RAG_CHROMA_PERSIST_DIR: /app/data/chroma
+      RAG_AUTO_INGEST_DIR: sample_docs
+      RAG_OPENAI_API_KEY: ${RAG_OPENAI_API_KEY:-}
+      RAG_API_KEY: ${RAG_API_KEY:-}
+    volumes:
+      - rag-index:/app/data/chroma
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  rag-index:
