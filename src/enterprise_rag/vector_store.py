@@ -52,6 +52,8 @@ class VectorStore(Protocol):
 
     def list_sources(self) -> list[str]: ...
 
+    def all_chunks(self) -> list[ScoredChunk]: ...
+
 
 def hash_embed(text: str, dimension: int) -> list[float]:
     """Bag-of-hashed-tokens embedding, L2-normalized for cosine comparison."""
@@ -111,7 +113,11 @@ class OpenAIEmbedder:
                             "Authorization": f"Bearer {self.api_key}",
                             "Content-Type": "application/json",
                         },
-                        json={"model": self.model, "input": batch, "dimensions": self.dimension},
+                        json={
+                            "model": self.model,
+                            "input": batch,
+                            "dimensions": self.dimension,
+                        },
                     )
                     response.raise_for_status()
                     rows = response.json()["data"]
@@ -129,7 +135,9 @@ def build_embedder(settings: Settings) -> Embedder:
     if settings.embedding_provider == "hash":
         return HashEmbedder(dimension=settings.embedding_dimension)
     if not settings.openai_api_key:
-        raise ValueError("RAG_OPENAI_API_KEY is required when RAG_EMBEDDING_PROVIDER=openai")
+        raise ValueError(
+            "RAG_OPENAI_API_KEY is required when RAG_EMBEDDING_PROVIDER=openai"
+        )
     return OpenAIEmbedder(
         api_key=settings.openai_api_key,
         model=settings.openai_embedding_model,
@@ -160,7 +168,9 @@ def _chroma_embedding_function(embedder: Embedder):
 
         @staticmethod
         def build_from_config(config: dict[str, int]) -> EnterpriseEmbeddingFunction:
-            return EnterpriseEmbeddingFunction(dimension=int(config.get("dimension", embedder.dimension)))
+            return EnterpriseEmbeddingFunction(
+                dimension=int(config.get("dimension", embedder.dimension))
+            )
 
     return EnterpriseEmbeddingFunction(dimension=embedder.dimension)
 
@@ -216,7 +226,9 @@ class ChromaVectorStore:
         documents = (result.get("documents") or [[]])[0]
         metadatas = (result.get("metadatas") or [[]])[0]
         distances = (result.get("distances") or [[]])[0]
-        for chunk_id, document, metadata, distance in zip(ids, documents, metadatas, distances):
+        for chunk_id, document, metadata, distance in zip(
+            ids, documents, metadatas, distances
+        ):
             score = 1.0 - float(distance)
             hits.append(
                 ScoredChunk(
@@ -228,6 +240,20 @@ class ChromaVectorStore:
             )
         hits.sort(key=lambda item: item.score, reverse=True)
         return hits
+
+    def all_chunks(self) -> list[ScoredChunk]:
+        chunks: list[ScoredChunk] = []
+        for offset in range(0, self.count(), 1000):
+            page = self._collection.get(
+                offset=offset, limit=1000, include=["documents", "metadatas"]
+            )
+            for cid, document, metadata in zip(
+                page["ids"], page["documents"], page["metadatas"], strict=True
+            ):
+                chunks.append(
+                    ScoredChunk(str(cid), document or "", dict(metadata or {}), 0.0)
+                )
+        return chunks
 
     def count(self) -> int:
         return int(self._collection.count())
@@ -264,9 +290,14 @@ class FaissVectorStore:
     def upsert(self, chunks: list[TextChunk]) -> int:
         if not chunks:
             return 0
-        vectors = np.asarray(self._embedder.embed_documents([chunk.text for chunk in chunks]), dtype=np.float32)
+        vectors = np.asarray(
+            self._embedder.embed_documents([chunk.text for chunk in chunks]),
+            dtype=np.float32,
+        )
         ids = np.asarray([_faiss_id(chunk.id) for chunk in chunks], dtype=np.int64)
-        existing = np.asarray([item_id for item_id in ids if item_id in self._items], dtype=np.int64)
+        existing = np.asarray(
+            [item_id for item_id in ids if item_id in self._items], dtype=np.int64
+        )
         if len(existing):
             self._index.remove_ids(existing)
         self._index.add_with_ids(np.ascontiguousarray(vectors), ids)
@@ -296,7 +327,9 @@ class FaissVectorStore:
         if not self._items or k <= 0:
             return []
         vector = np.asarray([self._embedder.embed_query(query)], dtype=np.float32)
-        scores, ids = self._index.search(np.ascontiguousarray(vector), min(k, len(self._items)))
+        scores, ids = self._index.search(
+            np.ascontiguousarray(vector), min(k, len(self._items))
+        )
         hits: list[ScoredChunk] = []
         for score, item_id in zip(scores[0], ids[0]):
             if int(item_id) < 0:
@@ -314,6 +347,12 @@ class FaissVectorStore:
             )
         hits.sort(key=lambda item: item.score, reverse=True)
         return hits
+
+    def all_chunks(self) -> list[ScoredChunk]:
+        return [
+            ScoredChunk(str(item["id"]), str(item["text"]), dict(item["metadata"]), 0.0)
+            for item in self._items.values()
+        ]
 
     def count(self) -> int:
         return len(self._items)
@@ -341,12 +380,18 @@ class FaissVectorStore:
             return
         payload = json.loads(self._meta_file.read_text(encoding="utf-8"))
         if int(payload.get("dimension", 0)) != self._dimension:
-            raise ValueError("FAISS index dimension does not match RAG_EMBEDDING_DIMENSION")
+            raise ValueError(
+                "FAISS index dimension does not match RAG_EMBEDDING_DIMENSION"
+            )
         self._index = self._faiss.read_index(str(self._index_file))
-        self._items = {int(item_id): item for item_id, item in payload.get("items", {}).items()}
+        self._items = {
+            int(item_id): item for item_id, item in payload.get("items", {}).items()
+        }
 
 
-def build_vector_store(settings: Settings, embedder: Embedder | None = None) -> VectorStore:
+def build_vector_store(
+    settings: Settings, embedder: Embedder | None = None
+) -> VectorStore:
     selected = embedder or build_embedder(settings)
     if settings.vector_backend == "faiss":
         return FaissVectorStore(settings, selected)

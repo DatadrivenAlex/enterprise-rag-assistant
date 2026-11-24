@@ -28,6 +28,7 @@ from enterprise_rag.document_loader import (
     load_path,
     resolve_ingest_path,
 )
+from enterprise_rag.hybrid import HybridStore
 from enterprise_rag.evaluator import EvaluationReport, content_tokens, evaluate_response
 from enterprise_rag.schemas import Citation
 from enterprise_rag.security import (
@@ -43,9 +44,7 @@ logger = logging.getLogger("enterprise_rag.pipeline")
 
 NOT_FOUND = "I could not find this in the indexed knowledge base."
 EMPTY_KB = "The knowledge base is empty. Ingest documents before asking a question."
-NO_SAFE_CONTEXT = (
-    "Retrieved passages were withheld by the prompt-injection filter, so I have no safe context to answer from."
-)
+NO_SAFE_CONTEXT = "Retrieved passages were withheld by the prompt-injection filter, so I have no safe context to answer from."
 
 _PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -126,7 +125,9 @@ def _role(message: BaseMessage) -> str:
 def wrap_untrusted_context(hits: list[ScoredChunk], *, canary: str) -> str:
     blocks: list[str] = []
     for marker, hit in enumerate(hits, start=1):
-        text = hit.text.replace(canary, "[removed]").replace("<<<", "").replace(">>>", "")
+        text = (
+            hit.text.replace(canary, "[removed]").replace("<<<", "").replace(">>>", "")
+        )
         source = str(hit.metadata.get("source", "unknown")).replace('"', "")
         blocks.append(
             f'<<<PASSAGE {marker} source="{source}" chunk="{hit.id}">>>\n{text}\n<<<END PASSAGE>>>'
@@ -145,7 +146,9 @@ def parse_prompt(prompt_text: str) -> tuple[str, list[Passage]]:
     question = question_match.group(1).strip()
     passages = [
         Passage(marker=int(marker), source=source, chunk_id=chunk_id, text=body.strip())
-        for marker, source, chunk_id, body in _PASSAGE_RE.findall(question_match.group(2))
+        for marker, source, chunk_id, body in _PASSAGE_RE.findall(
+            question_match.group(2)
+        )
     ]
     return question, passages
 
@@ -203,10 +206,19 @@ class ExtractiveChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: object,
     ) -> ChatResult:
-        human = next((message for message in reversed(messages) if isinstance(message, HumanMessage)), messages[-1])
+        human = next(
+            (
+                message
+                for message in reversed(messages)
+                if isinstance(message, HumanMessage)
+            ),
+            messages[-1],
+        )
         question, passages = parse_prompt(_message_text(human))
         answer = extractive_answer(question, passages)
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=answer))])
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=answer))]
+        )
 
 
 class OpenAIChatModel(BaseChatModel):
@@ -233,7 +245,10 @@ class OpenAIChatModel(BaseChatModel):
         payload = {
             "model": self.model,
             "temperature": 0,
-            "messages": [{"role": _role(message), "content": _message_text(message)} for message in messages],
+            "messages": [
+                {"role": _role(message), "content": _message_text(message)}
+                for message in messages
+            ],
         }
         try:
             with httpx.Client(timeout=self.timeout) as client:
@@ -250,7 +265,9 @@ class OpenAIChatModel(BaseChatModel):
         except (httpx.HTTPError, KeyError, IndexError, TypeError) as exc:
             logger.error("chat completion failed: %s", exc.__class__.__name__)
             raise GenerationError("Language model request failed") from None
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content or ""))])
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=content or ""))]
+        )
 
 
 def build_chat_model(settings: Settings) -> BaseChatModel:
@@ -278,7 +295,9 @@ class RAGPipeline:
         self.chain = _PROMPT | self.chat_model | StrOutputParser()
 
     def answer(self, question: str, top_k: int | None = None) -> RAGAnswer:
-        screen: ScreenResult = screen_user_input(question, max_chars=self.settings.max_query_chars)
+        screen: ScreenResult = screen_user_input(
+            question, max_chars=self.settings.max_query_chars
+        )
         if not screen.allowed:
             logger.warning("query refused: %s", ",".join(screen.reasons))
             return RAGAnswer(
@@ -290,7 +309,9 @@ class RAGPipeline:
                 quarantined=0,
             )
 
-        hits = self.store.similarity_search(screen.sanitized_text, top_k or self.settings.top_k)
+        hits = self.store.similarity_search(
+            screen.sanitized_text, top_k or self.settings.top_k
+        )
         safe: list[ScoredChunk] = []
         quarantined = 0
         for hit in hits:
@@ -306,7 +327,13 @@ class RAGPipeline:
             safe.append(hit)
 
         if not safe:
-            message = EMPTY_KB if not hits else NO_SAFE_CONTEXT
+            message = (
+                NO_SAFE_CONTEXT
+                if hits
+                else NOT_FOUND
+                if self.store.count()
+                else EMPTY_KB
+            )
             return RAGAnswer(
                 answer=message,
                 citations=[],
@@ -395,13 +422,22 @@ class KnowledgeService:
         chat_model: BaseChatModel | None = None,
     ) -> None:
         self.settings = settings
-        self.store = store or build_vector_store(settings)
+        base_store = store if store is not None else build_vector_store(settings)
+        self.store = (
+            HybridStore(base_store)
+            if store is None and settings.retrieval_mode == "hybrid"
+            else base_store
+        )
         self.pipeline = RAGPipeline(self.store, settings, chat_model=chat_model)
 
     def ingest_path(self, path: str | object) -> IngestStats:
         from pathlib import Path
 
-        target = path if isinstance(path, Path) else resolve_ingest_path(self.settings.data_dir, str(path))
+        target = (
+            path
+            if isinstance(path, Path)
+            else resolve_ingest_path(self.settings.data_dir, str(path))
+        )
         loaded: LoadedDocuments = load_path(
             target,
             chunk_size=self.settings.chunk_size,
@@ -414,14 +450,21 @@ class KnowledgeService:
             screen = screen_document_chunk(chunk.text)
             if not screen.allowed:
                 flagged += 1
-                logger.warning("skipped flagged chunk %s (%s)", chunk.id, ",".join(screen.reasons))
+                logger.warning(
+                    "skipped flagged chunk %s (%s)", chunk.id, ",".join(screen.reasons)
+                )
                 continue
             safe.append(chunk)
         sources = sorted({str(chunk.metadata["source"]) for chunk in loaded.chunks})
-        for source in sources:
-            self.store.delete_source(source)
-        self.store.upsert(safe)
-        logger.info("ingested files=%s chunks=%s flagged=%s", loaded.files, len(safe), flagged)
+        if isinstance(self.store, HybridStore):
+            self.store.replace_sources(sources, safe)
+        else:
+            for source in sources:
+                self.store.delete_source(source)
+            self.store.upsert(safe)
+        logger.info(
+            "ingested files=%s chunks=%s flagged=%s", loaded.files, len(safe), flagged
+        )
         return IngestStats(
             files=loaded.files,
             chunks=len(safe),

@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     embedding_dimension: int = Field(default=384, ge=32, le=3072)
 
     vector_backend: VectorBackend = "chroma"
+    retrieval_mode: Literal["hybrid", "vector"] = "hybrid"
     vector_persist: bool = True
     data_dir: Path = Field(default_factory=default_data_dir)
     chroma_persist_dir: Path | None = None
@@ -100,7 +101,9 @@ class Settings(BaseSettings):
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
         if self.chat_provider == "openai" and not self.openai_api_key:
-            raise ValueError("RAG_OPENAI_API_KEY is required when RAG_CHAT_PROVIDER=openai")
+            raise ValueError(
+                "RAG_OPENAI_API_KEY is required when RAG_CHAT_PROVIDER=openai"
+            )
         if self.embedding_provider == "openai" and not self.openai_api_key:
             raise ValueError(
                 "RAG_OPENAI_API_KEY is required when RAG_EMBEDDING_PROVIDER=openai"

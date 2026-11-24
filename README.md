@@ -9,6 +9,7 @@ The sample corpus is fictional material for Helios Analytics, written so the ser
 ## What it shows
 
 - Document loading with overlapping chunks and source metadata
+- Hybrid BM25 keyword + dense retrieval, fused with reciprocal-rank fusion (RRF); switch to vector-only with `RAG_RETRIEVAL_MODE=vector`
 - A vector-store adapter with ChromaDB and FAISS implementations
 - A LangChain chain (`prompt | chat model | parser`) that cites sources
 - Guardrails for instruction override, delimiter breakout, and canary leakage
@@ -31,7 +32,7 @@ flowchart LR
   eval[evaluator.py] --> api
 ```
 
-Ingest splits markdown and text, drops chunks that look like instruction overrides, and upserts the rest. A query is screened first. Retrieval then runs, poisoned passages are quarantined, and the remaining text is wrapped as untrusted data. The chat model must answer from that data and cite `[n]`. The response always includes structured citations unless the model found nothing or the answer was withheld.
+Ingest splits markdown and text, drops chunks that look like instruction overrides, and upserts the rest. A query is screened first. By default, hybrid retrieval combines BM25 keyword matches with dense ChromaDB or FAISS candidates using reciprocal-rank fusion; this compares ranks, not incompatible raw score scales. Set `RAG_RETRIEVAL_MODE=vector` for dense-only retrieval. Poisoned passages are quarantined, and the remaining text is wrapped as untrusted data. The chat model must answer from that data and cite `[n]`. The response always includes structured citations unless the model found nothing or the answer was withheld.
 
 ## Quick start
 
@@ -94,6 +95,8 @@ Settings come from the environment and an optional `.env` file. Every variable u
 | `RAG_CHAT_PROVIDER` | `extractive` | `extractive` quotes retrieved sentences. `openai` calls chat completions. |
 | `RAG_EMBEDDING_PROVIDER` | `hash` | `hash` is local and deterministic. `openai` calls the embeddings API. |
 | `RAG_VECTOR_BACKEND` | `chroma` | `chroma` or `faiss`. |
+| `RAG_RETRIEVAL_MODE` | `hybrid` | `hybrid` combines BM25 + dense ranks with RRF; `vector` uses dense retrieval only. |
+| `RAG_RETRIEVAL_MODE` | `hybrid` | `hybrid` combines BM25 and dense ranks with RRF; `vector` uses dense retrieval only. |
 | `RAG_VECTOR_PERSIST` | `true` | Persist the index under the data directory. |
 | `RAG_AUTO_INGEST_DIR` | `sample_docs` | Relative directory indexed on startup. Empty disables it. |
 | `RAG_TOP_K` | `4` | Passages retrieved per question. |
